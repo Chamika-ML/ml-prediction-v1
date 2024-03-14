@@ -31,8 +31,8 @@ TOBE_PREDICT_IMAGE_PATH = f"./images/need_to_predict_{BID}_{FID}.png"
 RESULT_IMG_PATH =  f"./runs/detect/predict/need_to_predict_{BID}_{FID}.png"
 MODEL = YOLO("./model//best.pt")
 CONFIDENCE_LEVEL = 0.5
-ACCESS_KEY_ID = ""
-SECRET_ACCESS_KEY_ID = ""
+ACCESS_KEY_ID = "AKIA4EQ6TDBWJ7BM5DK7"
+SECRET_ACCESS_KEY_ID = "9zO14I1rRtGmiSBKEc2X70Inc101SpDL7BsWrtqD"
 
 MYSQL_CREDENTIALS = {"host":"127.0.0.1", "user":"dilshan", "password":"1234", "database":"broodbox_results", "port":3306}
 MYSQL_RESULRS_TABLE_PREFIX = "ml_results"
