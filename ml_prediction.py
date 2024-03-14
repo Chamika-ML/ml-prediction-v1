@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[27]:
+# In[53]:
+
 
 import boto3
 from io import BytesIO
@@ -15,25 +16,31 @@ import ultralytics
 ultralytics.checks()
 from ultralytics import YOLO
 
+#!pip install mysql-connector-python
+import mysql.connector
 #!pip install sqlalchemy
 from sqlalchemy import create_engine
 
-BID = "B456"
-FID = "123"
+#BID = "B456"
+#FID = "123"
 TOBE_PREDICT_IMAGE_PATH = f"./images/need_to_predict_{BID}_{FID}.png"
 RESULT_IMG_PATH =  f"./runs/detect/predict/need_to_predict_{BID}_{FID}.png"
 MODEL = YOLO("./model//best.pt")
 CONFIDENCE_LEVEL = 0.5
+
 ACCESS_KEY_ID = "AKIA4EQ6TDBWJ7BM5DK7"
 SECRET_ACCESS_KEY_ID = "9zO14I1rRtGmiSBKEc2X70Inc101SpDL7BsWrtqD"
+BUCKET_NAME = "beehive-thermal-images-testing"
 
 MYSQL_CREDENTIALS = {"host":"127.0.0.1", "user":"dilshan", "password":"1234", "database":"broodbox_results", "port":3306}
 MYSQL_RESULRS_TABLE_PREFIX = "ml_results"
 
 
+
 # ## Database functions
 
-# In[ ]:
+# In[54]:
+
 
 def create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS):
     
@@ -48,9 +55,65 @@ def create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS):
     engine.dispose()
 
 
+    
+def delete_data(table_name,area_code,location_code,credentials=MYSQL_CREDENTIALS):  
+    """This function will delete the raws where the area_code and location_code matches."""
+    
+    # Connect to the MySQL server
+    connection = mysql.connector.connect(
+        host=credentials["host"],
+        user=credentials["user"],
+        password=credentials["password"],
+        database=credentials["database"]
+    )
+    
+    cursor = connection.cursor()
+    
+    insert_sql = f"""
+    DELETE FROM {table_name} WHERE area_code='{area_code}' AND location_code='{location_code}'
+    """
+    cursor.execute(insert_sql)
+    connection.commit()
+    cursor.close()
+    connection.close()
+
+
+def insert_multiple_raws(table_name, data, credentials=MYSQL_CREDENTIALS):
+    """ This function will inset multiple raws of data points to the given table.
+    the insert data shoulb be a dictionary"""
+    
+    # Connect to the MySQL server
+    connection = mysql.connector.connect(
+        host=credentials["host"],
+        user=credentials["user"],
+        password=credentials["password"],
+        database=credentials["database"]
+    )
+    
+    cursor = connection.cursor()
+    
+    # Prepare the INSERT query
+    insert_query = f"""
+    INSERT INTO {table_name} (area_code, location_code, classes, confidence, total_active_frames)
+    VALUES (%s, %s, %s, %s, %s)
+    """
+    # dictionary as a list of tuples of data points
+    insert_values =[(area_code, location_code, json.dumps(classes), json.dumps(confidence), total_active_frames) 
+                    for area_code, location_code, classes, confidence, total_active_frames 
+                    in list(zip(data['area_code'], data['location_code'], data['classes'], data['confidence'], data['total_active_frames']))]
+
+    # Execute the INSERT query with executemany
+    cursor.executemany(insert_query, insert_values) 
+    # Commit the transaction
+    connection.commit()  
+    cursor.close()
+    connection.close()
+
+
+
 # ## ML prediction functions 
 
-# In[10]:
+# In[55]:
 
 
 def collect_area_location_codes(BID,FID):
@@ -108,13 +171,13 @@ def create_results_folder_tree(BID,FID,codes_dict):
     # get connection with s3 and create resluts folder
     s3_client = boto3.client('s3', aws_access_key_id= ACCESS_KEY_ID,
                     aws_secret_access_key=SECRET_ACCESS_KEY_ID)
-    s3_client.put_object(Bucket="beehive-thermal-images-testing", Key=f"results_{BID}_{FID}/")
+    s3_client.put_object(Bucket=BUCKET_NAME, Key=f"results_{BID}_{FID}/")
 
     for area_code,location_list in codes_dict.items():
-        s3_client.put_object(Bucket="beehive-thermal-images-testing", Key=f"results_{BID}_{FID}/{area_code}/")
+        s3_client.put_object(Bucket=BUCKET_NAME, Key=f"results_{BID}_{FID}/{area_code}/")
 
         for location_code in location_list:
-            s3_client.put_object(Bucket="beehive-thermal-images-testing", Key=f"results_{BID}_{FID}/{area_code}/{location_code}/")
+            s3_client.put_object(Bucket=BUCKET_NAME, Key=f"results_{BID}_{FID}/{area_code}/{location_code}/")
             
 def is_folder_exist(folder,bucket):
     
@@ -138,23 +201,24 @@ def upload_image(RESULT_IMG_PATH,save_path,bucket_name):
         s3_client.upload_fileobj(f, bucket_name, save_path)
 
 
-# In[28]:
+# In[56]:
 
 
-def load_images_get_predctions(BID,FID,model=MODEL):
+def get_predctions_forall_locations(BID,FID,model=MODEL):
     
-    """ This function loads images form s3 bucket and call the ML model and get predcitions.
+    """ This function loads all the images form s3 bucket and call the ML model and get predcitions.
     then saved those predictons in dict and creates folder treee at s3 bucket and then saved the outcome images at s3.
     then create a mysql table and save the data into it.
-    finally returns the results dict"""
+    finally returns the results dict.
+    this function should use first time of all the farm image uploaded, or user wants to get predcitons of all the images
+    again form the begining"""
     
-    bucket_name = "beehive-thermal-images-testing"
     # get the connection with s3 bucket
     s3 = boto3.resource('s3',
                     aws_access_key_id=ACCESS_KEY_ID,
                     aws_secret_access_key=SECRET_ACCESS_KEY_ID)
 
-    bucket = s3.Bucket(bucket_name)
+    bucket = s3.Bucket(BUCKET_NAME)
     
      
     # get area-location code dict
@@ -203,6 +267,7 @@ def load_images_get_predctions(BID,FID,model=MODEL):
                     results_dic["confidence"].append(confidences)
                     results_dic["total_active_frames"].append(sum(classes))
                     
+                    # upload the output image to s3 
                     save_path = f"results_{BID}_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
                     upload_image(RESULT_IMG_PATH,save_path,bucket_name)
      
@@ -221,4 +286,112 @@ def load_images_get_predctions(BID,FID,model=MODEL):
     create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS)
     
     return results_dic
+
+
+# In[57]:
+
+
+def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MODEL):
+    """This function get load images, get predictions, save resulting images and returns 
+    resulting dictionary of data for a given area_code and location_code only. (only for a single location).
+    This function should use when a user update the images form a specific hive location."""
+    # get the connection with s3 bucket
+    s3 = boto3.resource('s3',
+                        aws_access_key_id=ACCESS_KEY_ID,
+                        aws_secret_access_key=SECRET_ACCESS_KEY_ID)
+
+    bucket = s3.Bucket(BUCKET_NAME)
+    # main result
+    results_dic = {"area_code":[], "location_code":[], "classes":[], "confidence":[], "total_active_frames":[]}
+    # load image paths
+    objects = list(bucket.objects.all().filter(Prefix=f"data-{BID}-{FID}/{area_code}/{location_code}/"))
+    objects = objects[1:]
+    
+    # if images are there
+    if len(objects) >=1:
+
+        #print(f"AREA:{area_code} and LOCATION:{location_code}")
+        for folder in objects:
+            results_dic["area_code"].append(area_code)
+            results_dic["location_code"].append(location_code) 
+
+            # read the image data from S3 bucket directly into memory
+            img_data = bucket.Object(folder.key).get().get('Body').read()
+            # convert image data into PIL image object
+            img = Image.open(BytesIO(img_data))
+            # rotate correction
+            img =  orientaion_correction(img) 
+            img.save(TOBE_PREDICT_IMAGE_PATH)
+
+            # get predictions
+            prediction = model.predict(TOBE_PREDICT_IMAGE_PATH, save=True, conf=CONFIDENCE_LEVEL, exist_ok=True)
+            for results in prediction:
+                boxes = results.boxes
+            classes = [int(item.item()) for item in boxes.cls]
+            confidences = [round(item.item(),2) for item in boxes.conf]
+
+            results_dic["classes"].append(classes)
+            results_dic["confidence"].append(confidences)
+            results_dic["total_active_frames"].append(sum(classes))
+
+            save_path = f"results_{BID}_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
+            upload_image(RESULT_IMG_PATH,save_path,bucket_name)
+    else:
+        results_dic["area_code"].append(area_code)
+        results_dic["location_code"].append(location_code) 
+        results_dic["confidence"].append([]) 
+        results_dic["classes"].append([])
+
+        ## USED RANDOM VALUE TO CLACULATE POLLINATION MAP. WHEN ACTUAL CASE FILL THIS, USING np.NaN 
+        results_dic["total_active_frames"].append(random.randint(0, 40)) 
+        
+    # update the ml results table by deleteing old data and inserting new data for the specified location
+    table_name = f"{MYSQL_RESULRS_TABLE_PREFIX}_{BID}_{FID}"    
+    delete_data(table_name,area_code,location_code,credentials=MYSQL_CREDENTIALS)
+    insert_multiple_raws(table_name, results_dic, credentials=MYSQL_CREDENTIALS)
+   
+    return results_dic
+
+
+# In[58]:
+
+
+#result = load_images_get_predctions(BID,FID)
+
+
+# In[59]:
+
+
+#dataset = pd.DataFrame(result)
+
+
+# In[60]:
+
+
+#dataset.head(50)
+
+
+# In[61]:
+
+
+"""s3 = boto3.resource('s3',
+                    aws_access_key_id= 'AKIA4EQ6TDBWJ7BM5DK7',
+                    aws_secret_access_key='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')
+
+bucket = s3.Bucket('beehive-thermal-images-testing')
+
+# specify the image and its key in the bucket
+image_key = f"data-{BID}-{FID}/1/11139/FLIR0222.jpg"
+
+# read the image data from S3 bucket directly into memory
+img_data = bucket.Object(image_key).get().get('Body').read()
+
+# convert image data into PIL image object
+img = Image.open(BytesIO(img_data))
+
+# do something with the image object, e.g. display it
+#img.show()
+img.save("new_img.png")
+
+img"""
 
