@@ -3,27 +3,20 @@
 
 # In[27]:
 
-
 import boto3
 from io import BytesIO
 from PIL import Image
-import matplotlib.pyplot as plt
 import requests
 import json
 import pandas as pd
-import numpy as np
 import random
  
-
-
 import ultralytics
 ultralytics.checks()
 from ultralytics import YOLO
 
-#!pip install mysql-connector-python
-import mysql.connector
 #!pip install sqlalchemy
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine
 
 BID = "B456"
 FID = "123"
@@ -42,15 +35,16 @@ MYSQL_RESULRS_TABLE_PREFIX = "ml_results"
 
 # In[ ]:
 
-
 def create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS):
     
     "this function creates a table in mysql database using pandas dataframe"
     
     engine = create_engine(f'mysql+mysqlconnector://{credentials["user"]}:{credentials["password"]}@{credentials["host"]}:{credentials["port"]}/{credentials["database"]}', connect_args={"connect_timeout": 28800})
-
-    dataset.to_sql(table_name, con=engine, if_exists='replace', index=False)
+    # Serialize lists into JSON strings
+    dataset["classes"] = dataset["classes"].apply(json.dumps)
+    dataset["confidence"] = dataset["confidence"].apply(json.dumps)
     
+    dataset.to_sql(table_name, con=engine, if_exists='replace', index=False)
     engine.dispose()
 
 
@@ -185,7 +179,7 @@ def load_images_get_predctions(BID,FID,model=MODEL):
             
             # if images are there
             if len(objects) >=1:
-                print(f"AREA:{area_code} and LOCATION:{location_code}")
+                #print(f"AREA:{area_code} and LOCATION:{location_code}")
                 for folder in objects:
                     results_dic["area_code"].append(area_code)
                     results_dic["location_code"].append(location_code) 
@@ -215,59 +209,16 @@ def load_images_get_predctions(BID,FID,model=MODEL):
             else:
                 results_dic["area_code"].append(area_code)
                 results_dic["location_code"].append(location_code) 
-                results_dic["total_active_frames"].append([])
-                results_dic["confidence"].append([])
-                
+                results_dic["confidence"].append([]) 
+                results_dic["classes"].append([])
+
                 ## USED RANDOM VALUE TO CLACULATE POLLINATION MAP. WHEN ACTUAL CASE FILL THIS, USING np.NaN 
-                results_dic["classes"].append(random.randint(0, 40))
-            
-            # creates a mysql table and store the results
-            dataset = pd.DataFrame(results_dic)
-            table_name = f"{MYSQL_RESULRS_TABLE_PREFIX}_{BID}_{FID}"
-            create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS)
+                results_dic["total_active_frames"].append(random.randint(0, 40))
+
+    # creates a mysql table and store the results
+    dataset = pd.DataFrame(results_dic)
+    table_name = f"{MYSQL_RESULRS_TABLE_PREFIX}_{BID}_{FID}"
+    create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS)
     
     return results_dic
-
-
-# In[12]:
-
-
-#result = load_images_get_predctions(BID,FID)
-
-
-# In[13]:
-
-
-#dataset = pd.DataFrame(result)
-
-
-# In[29]:
-
-
-#dataset.head(50)
-
-
-# In[15]:
-
-
-"""s3 = boto3.resource('s3',
-                    aws_access_key_id= 'AKIA4EQ6TDBWJ7BM5DK7',
-                    aws_secret_access_key='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')
-
-bucket = s3.Bucket('beehive-thermal-images-testing')
-
-# specify the image and its key in the bucket
-image_key = f"data-{BID}-{FID}/1/11139/FLIR0222.jpg"
-
-# read the image data from S3 bucket directly into memory
-img_data = bucket.Object(image_key).get().get('Body').read()
-
-# convert image data into PIL image object
-img = Image.open(BytesIO(img_data))
-
-# do something with the image object, e.g. display it
-#img.show()
-img.save("new_img.png")
-
-img"""
 
