@@ -35,8 +35,10 @@ ACCESS_KEY_ID = "AKIA4EQ6TDBWJ7BM5DK7"
 SECRET_ACCESS_KEY_ID = "9zO14I1rRtGmiSBKEc2X70Inc101SpDL7BsWrtqD"
 BUCKET_NAME = "beehive-thermal-images-testing"
 
+MYSQL_CREDENTIALS_MAIN = {"host":"127.0.0.1", "user":"dilshan", "password":"1234", "database":"broodbox", "port":3306}
 MYSQL_CREDENTIALS = {"host":"127.0.0.1", "user":"dilshan", "password":"1234", "database":"broodbox_results", "port":3306}
 MYSQL_RESULRS_TABLE_PREFIX = "ml_results"
+HIVE_DETAILS_TABLE_PREFIX ="hive_details"
 
 
 
@@ -97,13 +99,13 @@ def insert_multiple_raws(table_name, data, credentials=MYSQL_CREDENTIALS):
     
     # Prepare the INSERT query
     insert_query = f"""
-    INSERT INTO {table_name} (area_code, location_code, classes, confidence, total_active_frames)
+    INSERT INTO {table_name} (area_code, location_code, classes, confidence, active_frame_count)
     VALUES (%s, %s, %s, %s, %s)
     """
     # dictionary as a list of tuples of data points
-    insert_values =[(area_code, location_code, json.dumps(classes), json.dumps(confidence), total_active_frames) 
-                    for area_code, location_code, classes, confidence, total_active_frames 
-                    in list(zip(data['area_code'], data['location_code'], data['classes'], data['confidence'], data['total_active_frames']))]
+    insert_values =[(area_code, location_code, json.dumps(classes), json.dumps(confidence), active_frame_count) 
+                    for area_code, location_code, classes, confidence, active_frame_count 
+                    in list(zip(data['area_code'], data['location_code'], data['classes'], data['confidence'], data['active_frame_count']))]
 
     # Execute the INSERT query with executemany
     cursor.executemany(insert_query, insert_values) 
@@ -112,6 +114,63 @@ def insert_multiple_raws(table_name, data, credentials=MYSQL_CREDENTIALS):
     cursor.close()
     connection.close()
 
+
+def select_active_frame_counts(table_name,credentials=MYSQL_CREDENTIALS):
+    """ This function selects sum of active frame counts according to each area code and each location code in the ml_result_BID_FID table in the broodbox_results database.
+    Then returs list of tuples like [(area_code1, location_code1, total_active_frame_count1),.........()]"""
+
+    # Connect to the MySQL server
+    connection = mysql.connector.connect(
+        host=credentials["host"],
+        user=credentials["user"],
+        password=credentials["password"],
+        database=credentials["database"]
+    )  
+    cursor = connection.cursor() 
+    select_sql = f"""
+                    SELECT area_code,location_code,SUM(active_frame_count) AS total_active_frames FROM {table_name} GROUP BY area_code,location_code;
+                """
+    cursor.execute(select_sql)
+    results = cursor.fetchall()
+
+    connection.commit()
+    cursor.close()
+    connection.close()
+
+    return results
+
+
+def update_active_frame_counts(data_table_name, update_table_name, data_credentials=MYSQL_CREDENTIALS, update_credentials=MYSQL_CREDENTIALS_MAIN):
+    """ This function first gets the results of select_active_frame_counts function and then update the hive_details_BID_FID table's total_active_frames
+    column in the broodbox database"""
+
+    # gets the results of select_active_frame_counts 
+    update_values = select_active_frame_counts(data_table_name, data_credentials) 
+    # Connect to the MySQL server
+    connection = mysql.connector.connect(
+        host=update_credentials["host"],
+        user=update_credentials["user"],
+        password=update_credentials["password"],
+        database=update_credentials["database"]
+    )  
+    cursor = connection.cursor()
+    # updation
+    for update_data in update_values:
+        active_frame_count =  update_data[2]
+        area_code = update_data[0]
+        location_code = update_data[1]
+        # Use parameterized query to update values
+        update_sql = """
+                UPDATE {}
+                SET total_active_frames = %s
+                WHERE area_code = %s AND location_code = %s
+            """.format(update_table_name)
+
+        cursor.execute(update_sql, (active_frame_count, area_code, location_code))
+
+    connection.commit()
+    cursor.close()
+    connection.close()
 
 
 # ## ML prediction functions 
@@ -227,7 +286,7 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
     # get area-location code dict
     codes_dict = collect_area_location_codes(BID,FID)
     # main result
-    results_dic = {"area_code":[], "location_code":[], "classes":[], "confidence":[], "total_active_frames":[]}
+    results_dic = {"area_code":[], "location_code":[], "classes":[], "confidence":[], "active_frame_count":[]}
     # checks and create results folder tree to save the resulting images
     folder = f"results_{BID}_{FID}"
     tree_exist = is_folder_exist(folder,bucket)
@@ -268,7 +327,7 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
                     
                     results_dic["classes"].append(classes)
                     results_dic["confidence"].append(confidences)
-                    results_dic["total_active_frames"].append(sum(classes))
+                    results_dic["active_frame_count"].append(sum(classes))
                     
                     # upload the output image to s3 
                     save_path = f"results_{BID}_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
@@ -281,12 +340,15 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
                 results_dic["classes"].append([])
 
                 ## USED RANDOM VALUE TO CLACULATE POLLINATION MAP. WHEN ACTUAL CASE FILL THIS, USING np.NaN 
-                results_dic["total_active_frames"].append(random.randint(0, 40))
+                results_dic["active_frame_count"].append(random.randint(0, 40))
 
     # creates a mysql table and store the results
     dataset = pd.DataFrame(results_dic)
     table_name = f"{MYSQL_RESULRS_TABLE_PREFIX}_{BID}_{FID}"
     create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS)
+    # update hive details table to pollination map
+    hive_details_table_name = f"{HIVE_DETAILS_TABLE_PREFIX}_{BID}_{FID}"
+    update_active_frame_counts(table_name, hive_details_table_name)
     
     return results_dic
 
@@ -305,7 +367,7 @@ def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MOD
 
     bucket = s3.Bucket(BUCKET_NAME)
     # main result
-    results_dic = {"area_code":[], "location_code":[], "classes":[], "confidence":[], "total_active_frames":[]}
+    results_dic = {"area_code":[], "location_code":[], "classes":[], "confidence":[], "active_frame_count":[]}
     # load image paths
     objects = list(bucket.objects.all().filter(Prefix=f"data-{BID}-{FID}/{area_code}/{location_code}/"))
     objects = objects[1:]
@@ -335,7 +397,7 @@ def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MOD
 
             results_dic["classes"].append(classes)
             results_dic["confidence"].append(confidences)
-            results_dic["total_active_frames"].append(sum(classes))
+            results_dic["active_frame_count"].append(sum(classes))
 
             save_path = f"results_{BID}_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
             upload_image(RESULT_IMG_PATH,save_path,BUCKET_NAME)
@@ -346,12 +408,15 @@ def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MOD
         results_dic["classes"].append([])
 
         ## USED RANDOM VALUE TO CLACULATE POLLINATION MAP. WHEN ACTUAL CASE FILL THIS, USING np.NaN 
-        results_dic["total_active_frames"].append(random.randint(0, 40)) 
+        results_dic["active_frame_count"].append(random.randint(0, 40)) 
         
     # update the ml results table by deleteing old data and inserting new data for the specified location
     table_name = f"{MYSQL_RESULRS_TABLE_PREFIX}_{BID}_{FID}"    
     delete_data(table_name,area_code,location_code,credentials=MYSQL_CREDENTIALS)
     insert_multiple_raws(table_name, results_dic, credentials=MYSQL_CREDENTIALS)
+    # update hive details table to pollination map
+    hive_details_table_name = f"{HIVE_DETAILS_TABLE_PREFIX}_{BID}_{FID}"
+    update_active_frame_counts(table_name, hive_details_table_name)
    
     return results_dic
 
