@@ -23,6 +23,9 @@ from sqlalchemy import create_engine
 
 #BID = "B456"
 #FID = "123"
+
+BID = ""
+FID = ""
 TOBE_PREDICT_IMAGE_PATH = f"./images/need_to_predict_{BID}_{FID}.png"
 RESULT_IMG_PATH =  f"./runs/detect/predict/need_to_predict_{BID}_{FID}.png"
 MODEL = YOLO("./model//best.pt")
@@ -269,7 +272,7 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
                     
                     # upload the output image to s3 
                     save_path = f"results_{BID}_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
-                    upload_image(RESULT_IMG_PATH,save_path,bucket_name)
+                    upload_image(RESULT_IMG_PATH,save_path,BUCKET_NAME)
      
             else:
                 results_dic["area_code"].append(area_code)
@@ -335,7 +338,7 @@ def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MOD
             results_dic["total_active_frames"].append(sum(classes))
 
             save_path = f"results_{BID}_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
-            upload_image(RESULT_IMG_PATH,save_path,bucket_name)
+            upload_image(RESULT_IMG_PATH,save_path,BUCKET_NAME)
     else:
         results_dic["area_code"].append(area_code)
         results_dic["location_code"].append(location_code) 
