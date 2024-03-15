@@ -30,13 +30,13 @@ def get_and_save_predictions():
         return json_dump
 
     except Exception as e:
-        data_set = {"error":str(e)}
+        data_set = {"error":"Check the business ID or farm ID"}
         json_dump = json.dumps(data_set)
         return json_dump
 
 
 @app.route("/get_specific_predictions/", methods=["GET"])
-def get_and_save_predictions():  
+def get_and_save_predictions_specific():  
     try:
         BID = str(request.args.get("business_id"))
         FID = str(request.args.get("farm_id"))
@@ -49,7 +49,7 @@ def get_and_save_predictions():
         return json_dump
 
     except Exception as e:
-        data_set = {"error":str(e)}
+        data_set = {"error":"Check the business ID, farm ID, area code or location code"}
         json_dump = json.dumps(data_set)
         return json_dump
                
