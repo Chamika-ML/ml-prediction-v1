@@ -31,6 +31,7 @@ TOBE_PREDICT_IMAGE_PATH = f"./images/need_to_predict_{BID}_{FID}.png"
 RESULT_IMG_PATH =  f"./runs/detect/predict/need_to_predict_{BID}_{FID}.png"
 MODEL = YOLO("./model//best.pt")
 CONFIDENCE_LEVEL = 0.5
+MEAN_FRAMES_PER_HIVE = 8
 
 ACCESS_KEY_ID = "AKIA4EQ6TDBWJ7BM5DK7"
 SECRET_ACCESS_KEY_ID = "9zO14I1rRtGmiSBKEc2X70Inc101SpDL7BsWrtqD"
@@ -40,6 +41,7 @@ MYSQL_CREDENTIALS_MAIN = {"host":"127.0.0.1", "user":"dilshan", "password":"1234
 MYSQL_CREDENTIALS = {"host":"127.0.0.1", "user":"dilshan", "password":"1234", "database":"broodbox_results", "port":3306}
 MYSQL_RESULRS_TABLE_PREFIX = "ml_results"
 HIVE_DETAILS_TABLE_PREFIX ="hive_details"
+ANALYTICS_DATA_TABLE_PREFIX = "analytics"
 
 
 
@@ -50,16 +52,17 @@ HIVE_DETAILS_TABLE_PREFIX ="hive_details"
 
 def create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS):
     
-    "this function creates a table in mysql database using pandas dataframe"
+    """ This function creates a table in mysql database using pandas dataframe"""
     
     engine = create_engine(f'mysql+mysqlconnector://{credentials["user"]}:{credentials["password"]}@{credentials["host"]}:{credentials["port"]}/{credentials["database"]}', connect_args={"connect_timeout": 28800})
-    # Serialize lists into JSON strings
-    dataset["classes"] = dataset["classes"].apply(json.dumps)
-    dataset["confidence"] = dataset["confidence"].apply(json.dumps)
+    
+    if "classes" in dataset.columns:
+        # Serialize lists into JSON strings
+        dataset["classes"] = dataset["classes"].apply(json.dumps)
+        dataset["confidence"] = dataset["confidence"].apply(json.dumps)
     
     dataset.to_sql(table_name, con=engine, if_exists='replace', index=False)
     engine.dispose()
-
 
     
 def delete_data(table_name,area_code,location_code,credentials=MYSQL_CREDENTIALS):  
@@ -116,8 +119,8 @@ def insert_multiple_raws(table_name, data, credentials=MYSQL_CREDENTIALS):
     connection.close()
 
 
-def select_active_frame_counts(table_name,credentials=MYSQL_CREDENTIALS):
-    """ This function selects sum of active frame counts according to each area code and each location code in the ml_result_BID_FID table in the broodbox_results database.
+def select_data_using_query(select_query,credentials=MYSQL_CREDENTIALS):
+    """ This function selects data according to given query.
     Then returs list of tuples like [(area_code1, location_code1, total_active_frame_count1),.........()]"""
 
     # Connect to the MySQL server
@@ -127,11 +130,8 @@ def select_active_frame_counts(table_name,credentials=MYSQL_CREDENTIALS):
         password=credentials["password"],
         database=credentials["database"]
     )  
-    cursor = connection.cursor() 
-    select_sql = f"""
-                    SELECT area_code,location_code,SUM(active_frame_count) AS total_active_frames FROM {table_name} GROUP BY area_code,location_code;
-                """
-    cursor.execute(select_sql)
+    cursor = connection.cursor()   
+    cursor.execute(select_query)
     results = cursor.fetchall()
 
     connection.commit()
@@ -145,8 +145,12 @@ def update_active_frame_counts(data_table_name, update_table_name, data_credenti
     """ This function first gets the results of select_active_frame_counts function and then update the hive_details_BID_FID table's total_active_frames
     column in the broodbox database"""
 
+    select_sql = f"""
+                    SELECT area_code,location_code,SUM(active_frame_count) AS total_active_frames FROM {data_table_name} GROUP BY area_code,location_code;
+                """
+
     # gets the results of select_active_frame_counts 
-    update_values = select_active_frame_counts(data_table_name, data_credentials) 
+    update_values = select_data_using_query(select_sql, data_credentials) 
     # Connect to the MySQL server
     connection = mysql.connector.connect(
         host=update_credentials["host"],
@@ -172,6 +176,70 @@ def update_active_frame_counts(data_table_name, update_table_name, data_credenti
     connection.commit()
     cursor.close()
     connection.close()
+
+# ## Analytics functions 
+
+def get_global_ranking(number_list):
+    """ This function returns list of ranks of maximun to minimun according to given numeric list.
+    ex: input = [15,11,16,17,18] then the output is = [4,5,3,2,1]. this is used to get the global ranking list of each hive location according to location richness
+    of each hive location."""
+    # sorte the given list in decending order
+    sorted_number_list = sorted(set(number_list), reverse=True)
+    rank_list = []
+
+    for num in number_list:
+        rank = sorted_number_list.index(num)+1
+        rank_list.append(rank)
+
+    return rank_list
+
+def get_local_ranking(tuple_list,location_richness):
+    """ This function get list of tuples that contained area code,location code,total_beehives,total_active_frames as tuple_list parameter.
+    And location richness list as another parameter. then this will returns local ranking list according to the location richness of each hive location."""
+    # This dict contains each area code as key and its richness values as a list 
+    area_richness_dic = dict()
+    for i in range(len(tuple_list)):
+        area = tuple_list[i][0]
+        richness = location_richness[i]
+
+        if area not in area_richness_dic:
+            area_richness_dic[area] = []  
+        area_richness_dic[area].append(richness)
+    # This dict contains each area code as key and its local ranking of richness according to the area code
+    local_ranking_dict = dict()    
+    for key,value in area_richness_dic.items():
+        if key not in local_ranking_dict:
+            local_ranking_dict[key] = get_global_ranking(value)
+    # this list contains local_ranking_dict dictionary's values as one extended list 
+    local_ranking_list = []
+    for key,value in local_ranking_dict.items():
+        local_ranking_list.extend(value)
+    
+    return local_ranking_list
+
+def create_analytics_table(BID,FID,credentials=MYSQL_CREDENTIALS):
+    """ This function cretes analytics table by using hive details table and ml results tables."""
+
+    data_table_name = f"hive_details_{BID}_{FID}"
+    select_sql = f"""
+                        SELECT area_code,location_code,total_beehives,total_active_frames FROM {data_table_name};
+                    """
+    # get hive detail as list of tuples
+    results = select_data_using_query(select_sql, credentials=MYSQL_CREDENTIALS_MAIN)
+    # extract column data for the analytics table
+    location_richness =  [round((res_tuple[3]/(res_tuple[2]*MEAN_FRAMES_PER_HIVE))*100,2) for res_tuple in results]
+    global_ranking = get_global_ranking(location_richness)
+    local_ranking = get_local_ranking(results,location_richness)
+    area_codes = [result[0] for result in results]
+    location_codes = [result[1] for result in results]
+    total_beehives = [result[2] for result in results]
+    total_active_frames = [result[3] for result in results]
+    # creates dataframe 
+    data_dic = {"area_code":area_codes, "location_code":location_codes, "total_beehives":total_beehives, "total_active_frames":total_active_frames, "location_richness":location_richness, "global_ranking":global_ranking,"local_ranking":local_ranking}
+    dataframe  = pd.DataFrame(data_dic)
+    # creates analytics table
+    analytics_table_name = f"{ANALYTICS_DATA_TABLE_PREFIX}_{BID}_{FID}"
+    create_mysql_table(dataframe, analytics_table_name,credentials)
 
 
 # ## ML prediction functions 
@@ -349,6 +417,8 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
     # update hive details table to pollination map
     hive_details_table_name = f"{HIVE_DETAILS_TABLE_PREFIX}_{BID}_{FID}"
     update_active_frame_counts(table_name, hive_details_table_name)
+    # create analytics table
+    create_analytics_table(BID,FID)
     
     return results_dic
 
@@ -417,7 +487,9 @@ def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MOD
     # update hive details table to pollination map
     hive_details_table_name = f"{HIVE_DETAILS_TABLE_PREFIX}_{BID}_{FID}"
     update_active_frame_counts(table_name, hive_details_table_name)
-   
+    # update analytics table
+    create_analytics_table(BID,FID)
+
     return results_dic
 
 
