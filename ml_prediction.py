@@ -26,6 +26,7 @@ from sqlalchemy import create_engine
 
 BID = ""
 FID = ""
+BATABASE_API_BASE_URL = "http://ec2-54-206-119-102.ap-southeast-2.compute.amazonaws.com:5000"
 TOBE_PREDICT_IMAGE_PATH = f"./images/need_to_predict_{BID}_{FID}.png"
 RESULT_IMG_PATH =  f"./runs/detect/predict/need_to_predict_{BID}_{FID}.png"
 MODEL = YOLO("./model//best.pt")
@@ -183,13 +184,13 @@ def collect_area_location_codes(BID,FID):
     """ This function returns a dict that contained each area code as keys and location codes of each area code as values.
      the output format is {"area_code1":[list of location codes of that area1],.....,} """
     
-    url = f"http://ec2-54-206-119-102.ap-southeast-2.compute.amazonaws.com:5000/hive/area-location-codes/{BID}/{FID}"
+    url = f"{BATABASE_API_BASE_URL}/hive/area-location-codes/{BID}/{FID}"
     response = requests.get(url)
     # this contaied all area and loation codes separately as lists of a given farm
     data = response.json()
     area_codes = data["area_codes"]
 
-    url_all = f"http://ec2-54-206-119-102.ap-southeast-2.compute.amazonaws.com:5000/hive/{BID}/{FID}"
+    url_all = f"{BATABASE_API_BASE_URL}/hive/{BID}/{FID}"
     response_all = requests.get(url_all)
     # this contained all the hive details of given farm
     data_all = response_all.json()
@@ -233,13 +234,13 @@ def create_results_folder_tree(BID,FID,codes_dict):
     # get connection with s3 and create resluts folder
     s3_client = boto3.client('s3', aws_access_key_id= ACCESS_KEY_ID,
                     aws_secret_access_key=SECRET_ACCESS_KEY_ID)
-    s3_client.put_object(Bucket=BUCKET_NAME, Key=f"results_{BID}_{FID}/")
+    s3_client.put_object(Bucket=BUCKET_NAME, Key=f"images_{BID}/results_{FID}/")
 
     for area_code,location_list in codes_dict.items():
-        s3_client.put_object(Bucket=BUCKET_NAME, Key=f"results_{BID}_{FID}/{area_code}/")
+        s3_client.put_object(Bucket=BUCKET_NAME, Key=f"images_{BID}/results_{FID}/{area_code}/")
 
         for location_code in location_list:
-            s3_client.put_object(Bucket=BUCKET_NAME, Key=f"results_{BID}_{FID}/{area_code}/{location_code}/")
+            s3_client.put_object(Bucket=BUCKET_NAME, Key=f"images_{BID}/results_{FID}/{area_code}/{location_code}/")
             
 def is_folder_exist(folder,bucket):
     
@@ -288,7 +289,7 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
     # main result
     results_dic = {"area_code":[], "location_code":[], "classes":[], "confidence":[], "active_frame_count":[]}
     # checks and create results folder tree to save the resulting images
-    folder = f"results_{BID}_{FID}"
+    folder = f"images_{BID}/results_{FID}"
     tree_exist = is_folder_exist(folder,bucket)
     if not tree_exist:
         create_results_folder_tree(BID,FID,codes_dict)
@@ -300,7 +301,7 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
         for location_code in location_list:
             
             # load image paths
-            objects = list(bucket.objects.all().filter(Prefix=f"data-{BID}-{FID}/{area_code}/{location_code}/"))
+            objects = list(bucket.objects.all().filter(Prefix=f"images_{BID}/data_{FID}/{area_code}/{location_code}/"))
             objects = objects[1:]
             
             # if images are there
@@ -330,15 +331,14 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
                     results_dic["active_frame_count"].append(sum(classes))
                     
                     # upload the output image to s3 
-                    save_path = f"results_{BID}_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
+                    save_path = f"images_{BID}/results_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
                     upload_image(RESULT_IMG_PATH,save_path,BUCKET_NAME)
      
             else:
                 results_dic["area_code"].append(area_code)
                 results_dic["location_code"].append(location_code) 
-                results_dic["confidence"].append([]) 
                 results_dic["classes"].append([])
-
+                results_dic["confidence"].append([]) 
                 ## USED RANDOM VALUE TO CLACULATE POLLINATION MAP. WHEN ACTUAL CASE FILL THIS, USING np.NaN 
                 results_dic["active_frame_count"].append(random.randint(0, 40))
 
@@ -369,7 +369,7 @@ def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MOD
     # main result
     results_dic = {"area_code":[], "location_code":[], "classes":[], "confidence":[], "active_frame_count":[]}
     # load image paths
-    objects = list(bucket.objects.all().filter(Prefix=f"data-{BID}-{FID}/{area_code}/{location_code}/"))
+    objects = list(bucket.objects.all().filter(Prefix=f"images_{BID}/data_{FID}/{area_code}/{location_code}/"))
     objects = objects[1:]
     
     # if images are there
@@ -399,7 +399,7 @@ def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MOD
             results_dic["confidence"].append(confidences)
             results_dic["active_frame_count"].append(sum(classes))
 
-            save_path = f"results_{BID}_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
+            save_path = f"images_{BID}/results_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
             upload_image(RESULT_IMG_PATH,save_path,BUCKET_NAME)
     else:
         results_dic["area_code"].append(area_code)
