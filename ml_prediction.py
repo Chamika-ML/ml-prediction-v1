@@ -33,9 +33,9 @@ MODEL = YOLO("./model//best.pt")
 CONFIDENCE_LEVEL = 0.5
 MEAN_FRAMES_PER_HIVE = 8
 
-ACCESS_KEY_ID = "AKIA4EQ6TDBWJ7BM5DK7"
-SECRET_ACCESS_KEY_ID = "9zO14I1rRtGmiSBKEc2X70Inc101SpDL7BsWrtqD"
-BUCKET_NAME = "beehive-thermal-images-testing"
+ACCESS_KEY_ID = ""
+SECRET_ACCESS_KEY_ID = ""
+BUCKET_NAME = "broodbox-thermal-images"
 
 MYSQL_CREDENTIALS_MAIN = {"host":"127.0.0.1", "user":"dilshan", "password":"1234", "database":"broodbox", "port":3306}
 MYSQL_CREDENTIALS = {"host":"127.0.0.1", "user":"dilshan", "password":"1234", "database":"broodbox_results", "port":3306}
