@@ -26,7 +26,7 @@ from sqlalchemy import create_engine
 
 BID = ""
 FID = ""
-BATABASE_API_BASE_URL = "http://ec2-54-206-119-102.ap-southeast-2.compute.amazonaws.com:5000"
+BATABASE_API_BASE_URL = "http://ec2-52-65-94-246.ap-southeast-2.compute.amazonaws.com:5000"
 TOBE_PREDICT_IMAGE_PATH = f"./images/need_to_predict_{BID}_{FID}.png"
 RESULT_IMG_PATH =  f"./runs/detect/predict/need_to_predict_{BID}_{FID}.png"
 MODEL = YOLO("./model//best.pt")
@@ -49,7 +49,6 @@ ANALYTICS_DATA_TABLE_PREFIX = "analytics"
 
 # In[54]:
 
-
 def create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS):
     
     """ This function creates a table in mysql database using pandas dataframe"""
@@ -58,9 +57,11 @@ def create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS):
     
     if "classes" in dataset.columns:
         # Serialize lists into JSON strings
+        dataset["image_name"] = dataset["image_name"].apply(json.dumps)
+        dataset["image_name"] = dataset["image_name"].str.replace('"', '')
         dataset["classes"] = dataset["classes"].apply(json.dumps)
         dataset["confidence"] = dataset["confidence"].apply(json.dumps)
-    
+
     dataset.to_sql(table_name, con=engine, if_exists='replace', index=False)
     engine.dispose()
 
@@ -103,13 +104,13 @@ def insert_multiple_raws(table_name, data, credentials=MYSQL_CREDENTIALS):
     
     # Prepare the INSERT query
     insert_query = f"""
-    INSERT INTO {table_name} (area_code, location_code, classes, confidence, active_frame_count)
-    VALUES (%s, %s, %s, %s, %s)
+    INSERT INTO {table_name} (area_code, location_code, image_name, classes, confidence, active_frame_count)
+    VALUES (%s, %s, %s, %s, %s, %s)
     """
     # dictionary as a list of tuples of data points
-    insert_values =[(area_code, location_code, json.dumps(classes), json.dumps(confidence), active_frame_count) 
-                    for area_code, location_code, classes, confidence, active_frame_count 
-                    in list(zip(data['area_code'], data['location_code'], data['classes'], data['confidence'], data['active_frame_count']))]
+    insert_values =[(area_code, location_code, image_name, json.dumps(classes), json.dumps(confidence), active_frame_count) 
+                    for area_code, location_code, image_name, classes, confidence, active_frame_count 
+                    in list(zip(data['area_code'], data['location_code'], data['image_name'], data['classes'], data['confidence'], data['active_frame_count']))]
 
     # Execute the INSERT query with executemany
     cursor.executemany(insert_query, insert_values) 
@@ -355,7 +356,7 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
     # get area-location code dict
     codes_dict = collect_area_location_codes(BID,FID)
     # main result
-    results_dic = {"area_code":[], "location_code":[], "classes":[], "confidence":[], "active_frame_count":[]}
+    results_dic = {"area_code":[], "location_code":[],"image_name":[], "classes":[], "confidence":[], "active_frame_count":[]}
     # checks and create results folder tree to save the resulting images
     folder = f"images_{BID}/results_{FID}"
     tree_exist = is_folder_exist(folder,bucket)
@@ -397,14 +398,16 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
                     results_dic["classes"].append(classes)
                     results_dic["confidence"].append(confidences)
                     results_dic["active_frame_count"].append(sum(classes))
-                    
+                    image_name = folder.key.split('/')[-1]
+                    results_dic["image_name"].append(image_name)
                     # upload the output image to s3 
-                    save_path = f"images_{BID}/results_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
+                    save_path = f"images_{BID}/results_{FID}/{area_code}/{location_code}/{image_name}"
                     upload_image(RESULT_IMG_PATH,save_path,BUCKET_NAME)
      
             else:
                 results_dic["area_code"].append(area_code)
                 results_dic["location_code"].append(location_code) 
+                results_dic["image_name"].append([])
                 results_dic["classes"].append([])
                 results_dic["confidence"].append([]) 
                 ## USED RANDOM VALUE TO CLACULATE POLLINATION MAP. WHEN ACTUAL CASE FILL THIS, USING np.NaN 
@@ -437,7 +440,7 @@ def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MOD
 
     bucket = s3.Bucket(BUCKET_NAME)
     # main result
-    results_dic = {"area_code":[], "location_code":[], "classes":[], "confidence":[], "active_frame_count":[]}
+    results_dic = {"area_code":[], "location_code":[],"image_name":[], "classes":[], "confidence":[], "active_frame_count":[]}
     # load image paths
     objects = list(bucket.objects.all().filter(Prefix=f"images_{BID}/data_{FID}/{area_code}/{location_code}/"))
     objects = objects[1:]
@@ -468,12 +471,15 @@ def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MOD
             results_dic["classes"].append(classes)
             results_dic["confidence"].append(confidences)
             results_dic["active_frame_count"].append(sum(classes))
+            image_name = folder.key.split('/')[-1]
+            results_dic["image_name"].append(image_name)
 
-            save_path = f"images_{BID}/results_{FID}/{area_code}/{location_code}/{folder.key.split('/')[-1]}"
+            save_path = f"images_{BID}/results_{FID}/{area_code}/{location_code}/{image_name}"
             upload_image(RESULT_IMG_PATH,save_path,BUCKET_NAME)
     else:
         results_dic["area_code"].append(area_code)
         results_dic["location_code"].append(location_code) 
+        results_dic["image_name"].append([])
         results_dic["confidence"].append([]) 
         results_dic["classes"].append([])
 
