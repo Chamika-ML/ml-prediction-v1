@@ -11,6 +11,8 @@ import requests
 import json
 import pandas as pd
 import random
+import ast
+import statistics
  
 import ultralytics
 ultralytics.checks()
@@ -38,7 +40,8 @@ SECRET_ACCESS_KEY_ID = ""
 BUCKET_NAME = "broodbox-thermal-images"
 
 MYSQL_CREDENTIALS_MAIN = {"host":"127.0.0.1", "user":"dilshan", "password":"1234", "database":"broodbox", "port":3306}
-MYSQL_CREDENTIALS = {"host":"127.0.0.1", "user":"dilshan", "password":"1234", "database":"broodbox_results", "port":3306}
+MYSQL_CREDENTIALS_RESULTS = {"host":"127.0.0.1", "user":"dilshan", "password":"1234", "database":"broodbox_results", "port":3306}
+MAIN_DATABASE_NAME = "broodbox"
 MYSQL_RESULRS_TABLE_PREFIX = "ml_results"
 HIVE_DETAILS_TABLE_PREFIX ="hive_details"
 ANALYTICS_DATA_TABLE_PREFIX = "analytics"
@@ -49,7 +52,7 @@ ANALYTICS_DATA_TABLE_PREFIX = "analytics"
 
 # In[54]:
 
-def create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS):
+def create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS_RESULTS):
     
     """ This function creates a table in mysql database using pandas dataframe"""
     
@@ -66,7 +69,7 @@ def create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS):
     engine.dispose()
 
     
-def delete_data(table_name,area_code,location_code,credentials=MYSQL_CREDENTIALS):  
+def delete_data(table_name,area_code,location_code,credentials=MYSQL_CREDENTIALS_RESULTS):  
     """This function will delete the raws where the area_code and location_code matches."""
     
     # Connect to the MySQL server
@@ -88,7 +91,7 @@ def delete_data(table_name,area_code,location_code,credentials=MYSQL_CREDENTIALS
     connection.close()
 
 
-def insert_multiple_raws(table_name, data, credentials=MYSQL_CREDENTIALS):
+def insert_multiple_raws(table_name, data, credentials=MYSQL_CREDENTIALS_RESULTS):
     """ This function will inset multiple raws of data points to the given table.
     the insert data shoulb be a dictionary"""
     
@@ -120,7 +123,7 @@ def insert_multiple_raws(table_name, data, credentials=MYSQL_CREDENTIALS):
     connection.close()
 
 
-def select_data_using_query(select_query,credentials=MYSQL_CREDENTIALS):
+def select_data_using_query(select_query,credentials=MYSQL_CREDENTIALS_RESULTS):
     """ This function selects data according to given query.
     Then returs list of tuples like [(area_code1, location_code1, total_active_frame_count1),.........()]"""
 
@@ -142,7 +145,7 @@ def select_data_using_query(select_query,credentials=MYSQL_CREDENTIALS):
     return results
 
 
-def update_active_frame_counts(data_table_name, update_table_name, data_credentials=MYSQL_CREDENTIALS, update_credentials=MYSQL_CREDENTIALS_MAIN):
+def update_active_frame_counts(data_table_name, update_table_name, data_credentials=MYSQL_CREDENTIALS_RESULTS, update_credentials=MYSQL_CREDENTIALS_MAIN):
     """ This function first gets the results of select_active_frame_counts function and then update the hive_details_BID_FID table's total_active_frames
     column in the broodbox database"""
 
@@ -177,6 +180,96 @@ def update_active_frame_counts(data_table_name, update_table_name, data_credenti
     connection.commit()
     cursor.close()
     connection.close()
+
+
+def string_lists_to_numeric(string_list):
+    """" When this fucntion is given string like this : '[10, 10, 4, 4];[10, 8];[10, 4, 4, 10];[10, 4, 10, 4];[0, 7, 6, 6];[8, 8, 6, 4];[7, 6, 6];[9]' 
+    it weill convert like this : [10, 10, 4, 4, 10, 8, 10, 4, 4, 10, 10, 4, 10, 4, 0, 7, 6, 6, 8, 8, 6, 4, 7, 6, 6, 9] list"""
+    split_string = string_list.split(";")
+    list_srtings = [ast.literal_eval(str_element) for str_element in split_string ]
+    preprocesses_results_list = []
+    for sublist in list_srtings:
+        preprocesses_results_list.extend(sublist)
+    
+    return preprocesses_results_list
+
+def return_new_active_frme_counts(results_table_name,hive_table_name,main_database):
+    """ This function select area code, location code, total beehives, classes and total active frames from ml results and hive detials tables and then calculate 
+        new total active frames based on number of total beehives and ml predcted number of beehives. finally returs the results as list of lists like
+        [[area code 1, location code 1, new total active frames 1], [area code 2, location code 2, new total active frames 2],................]  """
+
+    select_sql = f"""
+        SELECT {results_table_name}.area_code, {results_table_name}.location_code, GROUP_CONCAT({results_table_name}.classes SEPARATOR ';'), 
+        {main_database}.{hive_table_name}.total_beehives, {main_database}.{hive_table_name}.total_active_frames
+        FROM {results_table_name} INNER JOIN {main_database}.{hive_table_name} 
+        ON {results_table_name}.area_code = {main_database}.{hive_table_name}.area_code AND {results_table_name}.location_code = {main_database}.{hive_table_name}.location_code
+        GROUP BY {results_table_name}.area_code, {results_table_name}.location_code;
+    """
+
+    # get and preprocess the results to get [(area code 1, location code 1, total beehives 1, totoal active frames 1, class list 1),.........] list
+    raw_results = select_data_using_query(select_sql)
+    preprocessed_results = [(data_point[0],data_point[1],data_point[3],data_point[4],string_lists_to_numeric(data_point[2])) for data_point in raw_results]
+
+    # go throught each result
+    final_results = []
+    for data_point in preprocessed_results:
+        single_results = [[0] for _ in range(3)]
+        # extract data form results
+        area_code  = data_point[0]
+        location_code = data_point[1]
+        currnet_total_active_frames = data_point[3]
+        class_list =  data_point[4]
+        number_of_given_beehives = len(class_list)
+        number_of_actual_beehives = data_point[2]
+        if number_of_given_beehives == 0:
+            mean_clas = 0
+        else:
+            mean_clas = round(statistics.mean(class_list))
+
+        # update single point data
+        single_results[0] = area_code
+        single_results[1] = location_code
+        # update single point active frame cound according to mean of classes of a givne location
+        hive_diffenece = number_of_actual_beehives - number_of_given_beehives
+        if hive_diffenece == 0:
+            pass
+        elif hive_diffenece > 0 or hive_diffenece < 0:
+            single_results[2] =  currnet_total_active_frames + mean_clas*hive_diffenece
+
+        final_results.append(single_results)
+    
+    return final_results
+
+def update_active_frame_counts_single_table(update_table_name, update_values, update_credentials=MYSQL_CREDENTIALS_MAIN):
+    """ This function updates total active frames column in the given table using given list of values like :
+     [[area code 1, location code 1, new total active frames 1], [area code 2, location code 2, new total active frames 2],................] """
+
+    # Connect to the MySQL server
+    connection = mysql.connector.connect(
+        host=update_credentials["host"],
+        user=update_credentials["user"],
+        password=update_credentials["password"],
+        database=update_credentials["database"]
+    )  
+    cursor = connection.cursor()
+    # updation
+    for update_data in update_values:
+        area_code = update_data[0]
+        location_code = update_data[1]
+        active_frame_count =  update_data[2] 
+        # Use parameterized query to update values
+        update_sql = """
+                UPDATE {}
+                SET total_active_frames = %s
+                WHERE area_code = %s AND location_code = %s
+            """.format(update_table_name)
+
+        cursor.execute(update_sql, (active_frame_count, area_code, location_code))
+
+    connection.commit()
+    cursor.close()
+    connection.close()
+
 
 # ## Analytics functions 
 
@@ -218,7 +311,7 @@ def get_local_ranking(tuple_list,location_richness):
     
     return local_ranking_list
 
-def create_analytics_table(BID,FID,credentials=MYSQL_CREDENTIALS):
+def create_analytics_table(BID,FID,credentials=MYSQL_CREDENTIALS_RESULTS):
     """ This function cretes analytics table by using hive details table and ml results tables."""
 
     data_table_name = f"hive_details_{BID}_{FID}"
@@ -241,6 +334,15 @@ def create_analytics_table(BID,FID,credentials=MYSQL_CREDENTIALS):
     # creates analytics table
     analytics_table_name = f"{ANALYTICS_DATA_TABLE_PREFIX}_{BID}_{FID}"
     create_mysql_table(dataframe, analytics_table_name,credentials)
+
+def update_total_active_frames_according_to_numberof_actual_hives(ml_results_table_name, hive_details_table_name, analytics_table_name,
+                                                                   mysql_credentials_results, mysql_credentials_main, main_database_name = MAIN_DATABASE_NAME,):
+    """ This function call the functions wich are responsible to update the active frame counts based on total beehives and ml predicted beehives.
+    this function updats the analytics and hive detials talbe's total active frame column which is used to calculate the pollination maps."""
+
+    new_active_frme_counts = return_new_active_frme_counts(ml_results_table_name, hive_details_table_name, main_database_name)
+    update_active_frame_counts_single_table(analytics_table_name, new_active_frme_counts, mysql_credentials_results)
+    update_active_frame_counts_single_table(hive_details_table_name, new_active_frme_counts, mysql_credentials_main)
 
 
 # ## ML prediction functions 
@@ -411,18 +513,21 @@ def get_predctions_forall_locations(BID,FID,model=MODEL):
                 results_dic["classes"].append([])
                 results_dic["confidence"].append([]) 
                 ## USED RANDOM VALUE TO CLACULATE POLLINATION MAP. WHEN ACTUAL CASE FILL THIS, USING np.NaN 
-                results_dic["active_frame_count"].append(random.randint(0, 40))
+                results_dic["active_frame_count"].append(random.randint(20, 100))
 
     # creates a mysql table and store the results
     dataset = pd.DataFrame(results_dic)
     table_name = f"{MYSQL_RESULRS_TABLE_PREFIX}_{BID}_{FID}"
-    create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS)
+    create_mysql_table(dataset, table_name, credentials=MYSQL_CREDENTIALS_RESULTS)
     # update hive details table to pollination map
     hive_details_table_name = f"{HIVE_DETAILS_TABLE_PREFIX}_{BID}_{FID}"
     update_active_frame_counts(table_name, hive_details_table_name)
     # create analytics table
     create_analytics_table(BID,FID)
-    
+    # update the total active frames according to total beehives and ml predced beehives in ml result and analytics tables
+    analytics_table_name = f"{ANALYTICS_DATA_TABLE_PREFIX}_{BID}_{FID}"
+    update_total_active_frames_according_to_numberof_actual_hives(table_name, hive_details_table_name, analytics_table_name, MYSQL_CREDENTIALS_RESULTS, MYSQL_CREDENTIALS_MAIN)
+        
     return results_dic
 
 
@@ -484,17 +589,20 @@ def get_predtictions_specific_location(BID,FID,area_code,location_code,model=MOD
         results_dic["classes"].append([])
 
         ## USED RANDOM VALUE TO CLACULATE POLLINATION MAP. WHEN ACTUAL CASE FILL THIS, USING np.NaN 
-        results_dic["active_frame_count"].append(random.randint(0, 40)) 
+        results_dic["active_frame_count"].append(random.randint(20, 100)) 
         
     # update the ml results table by deleteing old data and inserting new data for the specified location
     table_name = f"{MYSQL_RESULRS_TABLE_PREFIX}_{BID}_{FID}"    
-    delete_data(table_name,area_code,location_code,credentials=MYSQL_CREDENTIALS)
-    insert_multiple_raws(table_name, results_dic, credentials=MYSQL_CREDENTIALS)
+    delete_data(table_name,area_code,location_code,credentials=MYSQL_CREDENTIALS_RESULTS)
+    insert_multiple_raws(table_name, results_dic, credentials=MYSQL_CREDENTIALS_RESULTS)
     # update hive details table to pollination map
     hive_details_table_name = f"{HIVE_DETAILS_TABLE_PREFIX}_{BID}_{FID}"
     update_active_frame_counts(table_name, hive_details_table_name)
     # update analytics table
     create_analytics_table(BID,FID)
+    # update the total active frames according to total beehives and ml predced beehives in ml result and analytics tables
+    analytics_table_name = f"{ANALYTICS_DATA_TABLE_PREFIX}_{BID}_{FID}"
+    update_total_active_frames_according_to_numberof_actual_hives(table_name, hive_details_table_name, analytics_table_name, MYSQL_CREDENTIALS_RESULTS, MYSQL_CREDENTIALS_MAIN)
 
     return results_dic
 
